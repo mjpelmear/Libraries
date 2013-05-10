@@ -22,7 +22,7 @@
 #ifndef	__REEFANGEL_H__
 #define __REEFANGEL_H__
 
-#define ReefAngel_Version "1.0.5"
+#define ReefAngel_Version "1.0.7"
 
 #include <Globals.h>
 #include <InternalEEPROM.h>  // NOTE read/write internal memory
@@ -247,11 +247,16 @@ public:
 	*/
 	TimerClass Timer[6];
 	byte SelectedMenuItem;
+	byte DisplayedMenu;
+	bool showmenu;
 
 	// Ports to toggle during different modes
 	byte FeedingModePorts;
 	byte WaterChangePorts;
 	byte OverheatShutoffPorts;
+#ifdef OVERRIDE_PORTS
+	byte OverridePorts;
+#endif
 	byte EM;
 	byte REM;
 	
@@ -260,6 +265,9 @@ public:
 	byte FeedingModePortsE[MAX_RELAY_EXPANSION_MODULES];
 	byte WaterChangePortsE[MAX_RELAY_EXPANSION_MODULES];
 	byte OverheatShutoffPortsE[MAX_RELAY_EXPANSION_MODULES];
+#ifdef OVERRIDE_PORTS
+  byte OverridePortsE[MAX_RELAY_EXPANSION_MODULES];
+#endif  // OVERRIDE_PORTS
 #endif  // RelayExp
 #ifndef RemoveAllLights
 	byte LightsOnPorts;
@@ -272,7 +280,12 @@ public:
 //	byte WM1Port;	deprecated by issue #47
 //	byte WM2Port;	deprecated by issue #47
 //#endif  // WavemakerSetup
+#ifdef I2CMASTER
+	byte I2CCommand;
+	void UpdateTouchDisplay();
+#endif // I2CMASTER
 
+	byte ChangeMode;
 	byte OverheatProbe;
 	byte TempProbe;
 
@@ -287,8 +300,11 @@ public:
 	void inline AddRFExpansion() {};
 	void inline AddCustomColors() {};
 	void inline AddBusCheck() {};
+        void inline AddPortOverrides() {};
 	void inline Display24h() {};
 	void inline UseFlexiblePhCalibration() {};
+        void inline ReverseATOLow() {};
+        void inline ReverseATOHigh() {};
 	void inline Mini() {}; // deprecated
 	void inline Touch() {};
 	void inline TouchDisplay() {};
@@ -386,14 +402,15 @@ public:
 #endif  // CUSTOM_MENU
 #if defined REEFTOUCH || defined REEFTOUCHDISPLAY
     void ShowTouchInterface();
-	void UpdateTouchDisplay();
 #else
     void ShowInterface();
 #endif // REEFTOUCH
+    void PrepMenuScreen();
     void DisplayMenu();
     void DisplayMenuHeading();
     void DisplayMenuEntry(char *text);
     void ExitMenu();
+    void SetDisplayedMenu(byte value);
     void ProcessButtonPress();
 #ifdef CUSTOM_MENU
 	void ProcessButtonPressCustom();
@@ -454,16 +471,12 @@ public:
 	inline int GetBatteryVoltage() { return analogRead(VBAT)*.48828; };
 
 private:
-	bool showmenu;
 	time_t menutimeout;
 	byte taddr;
 
 	// Nested Menu variables
 	int menusptr[Total_Menus];
 	byte menuqtysptr[Total_Menus];
-public:
-	byte DisplayedMenu;
-private:
 	byte PreviousMenu;
 	bool redrawmenu;
 	

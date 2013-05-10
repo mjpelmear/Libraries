@@ -131,6 +131,10 @@ void pushbuffer(byte inStr)
 		    	// reset weboption to 0
 		    	weboption = 0;
 		    }
+		    else if (inStr == '-')
+		    {
+		    	webnegoption=true;
+		    }
 		    else if(isdigit(inStr))
 		    {
 		    	// process digits here
@@ -200,6 +204,7 @@ void processHTTP()
 			timeout=millis();
 		}
     }
+    if (webnegoption) weboption*=-1;
 	if (authStr[0]==0) auth=true;
     if (auth)
     {
@@ -269,6 +274,19 @@ void processHTTP()
 					}
 #endif  // RelayExp
 				}
+#ifdef OVERRIDE_PORTS
+				// Reset relay masks for ports we want always in their programmed states.
+				ReefAngel.Relay.RelayMaskOn &= ~ReefAngel.OverridePorts;
+				ReefAngel.Relay.RelayMaskOff |= ReefAngel.OverridePorts;
+#ifdef RelayExp
+			        byte i;
+			        for ( i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
+			        {
+			                ReefAngel.Relay.RelayMaskOnE[i] &= ~ReefAngel.OverridePortsE[i];
+			                ReefAngel.Relay.RelayMaskOffE[i] |= ReefAngel.OverridePortsE[i];
+			        }
+#endif  // RelayExp  
+#endif  // OVERRIDE_PORTS
 				ReefAngel.Relay.Write();
 				// Force update of the Portal after relay change
 //				ReefAngel.Timer[PORTAL_TIMER].ForceTrigger();
@@ -646,8 +664,7 @@ void processHTTP()
 				// Start up the feeding mode only if we are on the home screen or from Water change
 				if ( ReefAngel.DisplayedMenu == DEFAULT_MENU || ReefAngel.DisplayedMenu==WATERCHANGE_MODE )
 				{
-					ReefAngel.ClearScreen(DefaultBGColor);
-					ReefAngel.FeedingModeStart();
+					ReefAngel.ChangeMode=FEEDING_MODE;
 					ModeResponse(true);
 				}
 				else
@@ -661,8 +678,7 @@ void processHTTP()
 				// Start up the water change mode only if we are on the home screen
 				if ( ReefAngel.DisplayedMenu == DEFAULT_MENU )
 				{
-					ReefAngel.ClearScreen(DefaultBGColor);
-					ReefAngel.WaterChangeModeStart();
+					ReefAngel.ChangeMode=WATERCHANGE_MODE;
 					ModeResponse(true);
 				}
 				else
@@ -748,6 +764,7 @@ void processHTTP()
 	m_pushbackindex=0;
     reqtype=0;
     weboption=0;
+    webnegoption=false;
 }
 
 void PrintHeader(int s, byte type)

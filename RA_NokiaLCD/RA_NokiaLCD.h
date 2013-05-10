@@ -41,6 +41,7 @@ class RA_NokiaLCD
 
 public:
     RA_NokiaLCD();
+    byte LCDID;
 
 #ifndef REEFTOUCH
 	void Init();
@@ -92,6 +93,7 @@ private:
 	void SetBox(byte x1, byte y1, byte x2, byte y2);
 	void SendCMD(byte data);
 	void SendData(byte data);
+	void SendColor12Bit(byte color);
 	void ShiftBits(byte b);
 	void DrawTextLine(byte fcolor, byte bcolor, byte x, byte y, char c);
 #if defined FONT_8x8 || defined FONT_8x16 || defined FONT_12x16 || defined NUMBERS_8x8 || defined NUMBERS_8x16 || defined NUMBERS_12x16
@@ -103,6 +105,7 @@ private:
 
 public:
 	void DrawSingleMonitor(int Temp, byte fcolor, byte x, byte y, byte decimal);
+	void DrawSingleMonitorAlarm(int Temp, byte fcolor, byte x, byte y, byte decimal, int high, int low, byte warn_color);
 	void DrawSingleGraph(byte color, byte x, byte y, int EEaddr);
 #endif //  REEFTOUCH
 

@@ -41,6 +41,9 @@ AddDateTimeMenu	KEYWORD2
 AddCustomColors	KEYWORD2
 AddBusCheck	KEYWORD2
 Display24h	KEYWORD2
+ReverseATOLow   KEYWORD2
+ReverseATOHigh  KEYWORD2
+AddPortOverrides	KEYWORD2
 One	KEYWORD2
 Mini	KEYWORD2
 DayLights	KEYWORD2
@@ -109,6 +112,8 @@ DrawCircleOutline	KEYWORD2
 FillCircle	KEYWORD2
 DrawCircleOutletBox	KEYWORD2
 DrawCircleOutletBoxHorizontal	KEYWORD2
+DrawSingleMonitor	KEYWORD2
+DrawSingleMonitorAlarm	KEYWORD2
 
 #PWM
 
@@ -427,6 +432,12 @@ WaterLevelMin_read	KEYWORD2
 WaterLevelMin_write	KEYWORD2
 SalTempComp_read	KEYWORD2
 SalTempComp_write	KEYWORD2
+WaterLevelLow_read	KEYWORD2
+WaterLevelLow_write	KEYWORD2
+WaterLevelHigh_read	KEYWORD2
+WaterLevelHigh_write	KEYWORD2
+LCDID_read		KEYWORD2
+LCDID_write		KEYWORD2
 
 IMCheck_read	KEYWORD2
 IMCheck_write	KEYWORD2

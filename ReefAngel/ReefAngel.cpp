@@ -454,6 +454,7 @@ ReefAngelClass::ReefAngelClass()
 
 void ReefAngelClass::Init()
 {
+	LCD.BacklightOff();
 #if defined WDT || defined WDT_FORCE
 	// enable watchdog timer for 1 second.  consider allowing this option to be configured.
 	if ( wdtenabled ) wdt_enable(WDTO_1S);
@@ -470,6 +471,7 @@ void ReefAngelClass::Init()
 	Wire.onReceive(receiveEventMaster);
 	Wire.onRequest(NULL);
 	Wire.begin(I2CRA_Master);
+	I2CCommand=0;
 #else // REEFTOUCHDISPLAY
 	Wire.onReceive(NULL);
 	Wire.onRequest(NULL);
@@ -543,9 +545,11 @@ void ReefAngelClass::Init()
 	TouchLCD.SetBacklight(100);
 #else //  defined REEFTOUCH || defined REEFTOUCHDISPLAY
 	Joystick.Init();
+	LCD.LCDID=InternalMemory.LCDID_read();
 	LCD.Init();
 	LCD.BacklightOn();
 #endif //  defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	ChangeMode=0;
 	Flags = 0;
 	Relay.AllOff();
 	OverheatProbe = T2_PROBE;
@@ -646,6 +650,11 @@ void ReefAngelClass::Init()
     //                 Port 87654321
     OverheatShutoffPorts = B00000100;
 
+#ifdef OVERRIDE_PORTS
+    // Override all relay masks for the following ports
+    OverridePorts = 0;
+#endif // OVERRIDE_PORTS
+
     // DelayedOn ports, do not manually modify this variable, let the DelayedOn function modify it
     DelayedOnPorts = 0;
 
@@ -657,6 +666,10 @@ void ReefAngelClass::Init()
 		WaterChangePortsE[i] = 0;
 		OverheatShutoffPortsE[i] = 0;
 		DelayedOnPortsE[i] = 0;
+#ifdef OVERRIDE_PORTS
+		// Override all relay masks for the following ports
+		OverridePortsE[i] = 0;
+#endif // OVERRIDE_PORTS
 #ifndef RemoveAllLights
 		LightsOnPortsE[i] = 0;
 #endif  // RemoveAllLights
@@ -677,7 +690,9 @@ void ReefAngelClass::Init()
 
 #if defined wifi || defined I2CMASTER
 	EM = PWMEbit + RFEbit + AIbit + Salbit + ORPbit + IObit + PHbit + WLbit;
+#ifdef wifi
 	portalusername="";
+#endif // wifi
 #ifdef RelayExp
 	for (byte a=0;a<InstalledRelayExpansionModules;a++)
 	{
@@ -704,6 +719,11 @@ void ReefAngelClass::Refresh()
 #if defined WDT || defined WDT_FORCE
 	wdt_reset();
 #endif  // defined WDT || defined WDT_FORCE
+	if (ChangeMode==FEEDING_MODE)
+		FeedingModeStart();
+	if (ChangeMode==WATERCHANGE_MODE)
+		WaterChangeModeStart();
+	ChangeMode=0;
 	boolean LightRelayOn=false;
 	for (int l=0;l<8;l++)
 	{
@@ -789,6 +809,20 @@ void ReefAngelClass::Refresh()
 	IO.GetChannel();
 #endif  // IOEXPANSION
 #endif  // REEFTOUCHDISPLAY	
+
+#ifdef OVERRIDE_PORTS
+	// Reset relay masks for ports we want always in their programmed states.
+	ReefAngel.Relay.RelayMaskOn &= ~OverridePorts;
+	ReefAngel.Relay.RelayMaskOff |= OverridePorts;
+#ifdef RelayExp
+        byte i;
+        for ( i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
+        {
+                Relay.RelayMaskOnE[i] &= ~OverridePortsE[i];
+                Relay.RelayMaskOffE[i] |= OverridePortsE[i];
+        }
+#endif  // RelayExp  
+#endif  // OVERRRIDE_PORTS	
 	
 	Relay.Write();
 	if (ds.read_bit()==0) return;  // ds for OneWire TempSensor
@@ -987,15 +1021,16 @@ void ReefAngelClass::ConvertTempUnit()
 
 void ReefAngelClass::StandardLights(byte LightsRelay, byte OnHour, byte OnMinute, byte OffHour, byte OffMinute)
 {
+	int NumMinsToday=NumMins(hour(),minute());
 	if (NumMins(OffHour,OffMinute) > NumMins(OnHour,OnMinute))
 	{
-		if (NumMins(hour(),minute()) >= NumMins(OnHour,OnMinute)) Relay.On(LightsRelay); else Relay.Off(LightsRelay);
-		if (NumMins(hour(),minute()) >= NumMins(OffHour,OffMinute)) Relay.Off(LightsRelay);
+		if (NumMinsToday >= NumMins(OnHour,OnMinute)) Relay.On(LightsRelay); else Relay.Off(LightsRelay);
+		if (NumMinsToday >= NumMins(OffHour,OffMinute)) Relay.Off(LightsRelay);
 	}
 	else
 	{
-		if (NumMins(hour(),minute()) >= NumMins(OffHour,OffMinute)) Relay.Off(LightsRelay); else Relay.On(LightsRelay);
-		if (NumMins(hour(),minute()) >= NumMins(OnHour,OnMinute)) Relay.On(LightsRelay);
+		if (NumMinsToday >= NumMins(OffHour,OffMinute)) Relay.Off(LightsRelay); else Relay.On(LightsRelay);
+		if (NumMinsToday >= NumMins(OnHour,OnMinute)) Relay.On(LightsRelay);
 	}
 }
 
@@ -1754,15 +1789,16 @@ void ReefAngelClass::FeedingModeStart()
 	// TODO Test SaveRelayState
 	CurrentRelayState = Relay.RelayData;
 #endif  // SaveRelayState
-	Relay.RelayMaskOff = ~FeedingModePorts;
+	Relay.RelayMaskOff &= ~FeedingModePorts;
 #ifdef RelayExp
 	byte i;
 	for ( i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 	{
-		Relay.RelayMaskOffE[i] = ~FeedingModePortsE[i];
+		Relay.RelayMaskOffE[i] &= ~FeedingModePortsE[i];
 	}
 #endif  // RelayExp
 #if defined REEFTOUCH || defined REEFTOUCHDISPLAY	
+	NeedsRedraw=true;
 #else  // REEFTOUCH
 	ClearScreen(DefaultBGColor);
 	LCD.DrawText(ModeScreenColor, DefaultBGColor, 30, 10, "Feeding Mode");
@@ -1775,7 +1811,7 @@ void ReefAngelClass::FeedingModeStart()
 #endif  // RFEXPANSION
 	Timer[FEEDING_TIMER].Start();  //Start Feeding Mode timer
 	// Tell controller what mode we are in
-	DisplayedMenu = FEEDING_MODE;
+	SetDisplayedMenu(FEEDING_MODE);
 }
 
 void ReefAngelClass::WaterChangeModeStart()
@@ -1785,18 +1821,19 @@ void ReefAngelClass::WaterChangeModeStart()
 	// TODO Test SaveRelayState
 	CurrentRelayState = Relay.RelayData;
 #endif  // SaveRelayState
-	Relay.RelayMaskOff = ~WaterChangePorts;
+	Relay.RelayMaskOff &= ~WaterChangePorts;
 #ifdef RelayExp
 	byte i;
 	for ( i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 	{
-		Relay.RelayMaskOffE[i] = ~WaterChangePortsE[i];
+		Relay.RelayMaskOffE[i] &= ~WaterChangePortsE[i];
 	}
 #endif  // RelayExp
 //	Relay.Write();
 	ClearScreen(DefaultBGColor);
 	// Display the water change mode
-#if defined REEFTOUCH || defined REEFTOUCHDISPLAY	
+#if defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	NeedsRedraw=true;
 #else  // REEFTOUCH
 	LCD.DrawText(ModeScreenColor, DefaultBGColor, 20, 10, "Water Change Mode");
 #ifdef DisplayImages
@@ -1804,7 +1841,7 @@ void ReefAngelClass::WaterChangeModeStart()
 #endif  // DisplayImages
 #endif  // REEFTOUCH
 	// Tell controller what mode we are in
-	DisplayedMenu = WATERCHANGE_MODE;
+	SetDisplayedMenu(WATERCHANGE_MODE);
 }
 
 void ReefAngelClass::ATOClear()
@@ -1820,6 +1857,14 @@ void ReefAngelClass::ATOClear()
 #ifdef WATERLEVELEXPANSION
 	WLATO.StopTopping();
 #endif // WATERLEVELEXPANSION
+#if defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	if (DisplayedMenu==TOUCH_MENU)
+		SetDisplayedMenu(DEFAULT_MENU);
+#endif  // REEFTOUCH
+#ifdef REEFTOUCHDISPLAY
+	SendMaster(MESSAGE_COMMAND,COMMAND_CLEAR_ATO,0);
+#endif // REEFTOUCHDISPLAY
+
 }
 
 void ReefAngelClass::OverheatCheck()
@@ -1835,11 +1880,11 @@ void ReefAngelClass::OverheatCheck()
 		InternalMemory.write(Overheat_Exceed_Flag, 1);
 #endif  // ENABLE_EXCEED_FLAGS
 		// invert the ports that are activated
-		Relay.RelayMaskOff = ~OverheatShutoffPorts;
+		Relay.RelayMaskOff &= ~OverheatShutoffPorts;
 #ifdef RelayExp
 		for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 		{
-			Relay.RelayMaskOffE[i] = ~OverheatShutoffPortsE[i];
+			Relay.RelayMaskOffE[i] &= ~OverheatShutoffPortsE[i];
 		}
 #endif  // RelayExp
 	}
@@ -1852,37 +1897,53 @@ void ReefAngelClass::OverheatClear()
 #ifdef ENABLE_EXCEED_FLAGS
 	InternalMemory.write(Overheat_Exceed_Flag, 0);
 #endif  // ENABLE_EXCEED_FLAGS
-	Relay.RelayMaskOff = B11111111;
+	Relay.RelayMaskOff |= OverheatShutoffPorts;
 #ifdef RelayExp
 	for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 	{
-		Relay.RelayMaskOffE[i] = B11111111;
+		Relay.RelayMaskOffE[i] |= OverheatShutoffPortsE[i];
 	}
 #endif  // RelayExp
 	Relay.Write();
+#if defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	if (DisplayedMenu==TOUCH_MENU)
+		SetDisplayedMenu(DEFAULT_MENU);
+#endif  // REEFTOUCH
+#ifdef REEFTOUCHDISPLAY
+	SendMaster(MESSAGE_COMMAND,COMMAND_CLEAR_OVERHEAT,0);
+#endif // REEFTOUCHDISPLAY
 }
 
 void ReefAngelClass::LightsOn()
 {
     // turn on ports
-    Relay.RelayMaskOn = LightsOnPorts;
+    Relay.RelayMaskOn |= LightsOnPorts;
 #ifdef RelayExp
 	for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 	{
-		Relay.RelayMaskOnE[i] = LightsOnPortsE[i];
+		Relay.RelayMaskOnE[i] |= LightsOnPortsE[i];
 	}
 #endif  // RelayExp
     Relay.Write();
+	bitSet(Flags,LightsOnFlag);
+#if defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	menu_button_functions1[4] = &ReefAngelClass::LightsOff;
+	if (DisplayedMenu==TOUCH_MENU)
+		SetDisplayedMenu(DEFAULT_MENU);
+#endif  // REEFTOUCH
+#ifdef REEFTOUCHDISPLAY
+	SendMaster(MESSAGE_COMMAND,COMMAND_LIGHTS_ON,0);
+#endif // REEFTOUCHDISPLAY
 }
 
 void ReefAngelClass::LightsOff()
 {
     // reset ports
-    Relay.RelayMaskOn = B00000000;
+    Relay.RelayMaskOn &= ~LightsOnPorts;
 #ifdef RelayExp
 	for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 	{
-		Relay.RelayMaskOnE[i] = B00000000;
+		Relay.RelayMaskOnE[i] &= ~LightsOnPortsE[i];
 	}
 #endif  // RelayExp
 #if defined DisplayLEDPWM && !defined REEFANGEL_MINI
@@ -1892,6 +1953,15 @@ void ReefAngelClass::LightsOff()
     PWM.SetDaylight(0);
 #endif  // defined DisplayLEDPWM && !defined REEFANGEL_MINI
     Relay.Write();
+	bitClear(Flags,LightsOnFlag);
+#if defined REEFTOUCH || defined REEFTOUCHDISPLAY
+	menu_button_functions1[4] = &ReefAngelClass::LightsOn;
+	if (DisplayedMenu==TOUCH_MENU)
+		SetDisplayedMenu(DEFAULT_MENU);
+#endif  // REEFTOUCH
+#ifdef REEFTOUCHDISPLAY
+	SendMaster(MESSAGE_COMMAND,COMMAND_LIGHTS_OFF,0);
+#endif // REEFTOUCHDISPLAY
 }
 
 void ReefAngelClass::RefreshScreen()
@@ -2082,8 +2152,7 @@ void ReefAngelClass::ChangeDisplayedScreen(signed char index)
 
 void ReefAngelClass::MainScreen()
 {
-	DisplayedMenu=DEFAULT_MENU;
-	DisplayedScreen=MAIN_SCREEN;
+	ExitMenu();
 	NeedsRedraw=true;	
 }
 
@@ -2097,7 +2166,7 @@ void ReefAngelClass::InitMenu(int ptr, byte qty)
     menuqtysptr[MainMenu] = qty;
     // initialize menus
     PreviousMenu = DEFAULT_MENU;
-    DisplayedMenu = DEFAULT_MENU;  // default menu to display
+	SetDisplayedMenu(DEFAULT_MENU);
     SelectedMenuItem = DEFAULT_MENU_ITEM;  // default item to have selected
     redrawmenu = true;
     showmenu = false;  // initially we are showing the main graphic and no menu
@@ -2126,12 +2195,140 @@ void ReefAngelClass::InitMenus()
 
     // initialize menus
     PreviousMenu = DEFAULT_MENU;
-    DisplayedMenu = DEFAULT_MENU;  // default menu to display
+	SetDisplayedMenu(DEFAULT_MENU);
     SelectedMenuItem = DEFAULT_MENU_ITEM;  // default item to have selected
     redrawmenu = true;
     showmenu = false;  // initially we are showing the main graphic and no menu
 }
 #endif  // CUSTOM_MENU
+
+#ifdef I2CMASTER
+void ReefAngelClass::UpdateTouchDisplay()
+{
+	// ID 0 - T1, T2, T3 and pH
+	Wire.beginTransmission(I2CRA_TouchDisplay);
+	Wire.write(0);
+	Wire.write(Params.Temp[T1_PROBE]%256);
+	Wire.write(Params.Temp[T1_PROBE]/256);
+	Wire.write(Params.Temp[T2_PROBE]%256);
+	Wire.write(Params.Temp[T2_PROBE]/256);
+	Wire.write(Params.Temp[T3_PROBE]%256);
+	Wire.write(Params.Temp[T3_PROBE]/256);
+	Wire.write(Params.PH%256);
+	Wire.write(Params.PH/256);
+	Wire.endTransmission();
+	delay(10);
+	wdt_reset();
+
+	// ID 1 - R, RON, ROFF, ATO, EM, REM, DisplayedMenu and Flags
+	byte atostatus=0;
+	Wire.beginTransmission(I2CRA_TouchDisplay);
+	Wire.write(1);
+	Wire.write(Relay.RelayData);
+	Wire.write(Relay.RelayMaskOn);
+	Wire.write(Relay.RelayMaskOff);
+	if (ReefAngel.LowATO.IsActive())
+		bitSet(atostatus,0);
+	else
+		bitClear(atostatus,0);
+	if (ReefAngel.HighATO.IsActive())
+		bitSet(atostatus,1);
+	else
+		bitClear(atostatus,1);
+	Wire.write(atostatus);
+	Wire.write(EM);
+	Wire.write(REM);
+	Wire.write(DisplayedMenu);
+	Wire.write(Flags);
+	Wire.endTransmission();
+	delay(10);
+	wdt_reset();
+
+	// ID 2 - PWM Daylight, Actinic and Exp. Channels
+	Wire.beginTransmission(I2CRA_TouchDisplay);
+	Wire.write(2);
+#ifdef DisplayLEDPWM
+	Wire.write(PWM.GetDaylightValue());
+	Wire.write(PWM.GetActinicValue());
+#else
+	Wire.write(0);
+	Wire.write(0);
+#endif  // DisplayLEDPWM
+
+#ifdef PWMEXPANSION
+	for (int a=0;a<PWM_EXPANSION_CHANNELS;a++)
+		Wire.write(PWM.GetChannelValue(a));
+#else
+	for (int a=0;a<PWM_EXPANSION_CHANNELS;a++)
+		Wire.write(0);
+#endif //  PWMEXPANSION
+	Wire.endTransmission();
+	delay(10);
+	wdt_reset();
+
+	// ID 3 - RF Mode, Speed and Duration - AI Channels
+#ifdef RFEXPANSION
+	Wire.beginTransmission(I2CRA_TouchDisplay);
+	Wire.write(3);
+	Wire.write(RF.Mode);
+	Wire.write(RF.Speed);
+	Wire.write(RF.Duration);
+#ifdef AI_LED
+	Wire.write(AI.GetChannel(0));
+	Wire.write(AI.GetChannel(1));
+	Wire.write(AI.GetChannel(2));
+#else
+	Wire.write(0);
+	Wire.write(0);
+	Wire.write(0);
+#endif // AI_LED
+#ifdef IOEXPANSION
+	Wire.write(IO.IOPorts);
+#else
+	Wire.write(0);
+#endif // IOEXPANSION
+	Wire.write(0);
+	Wire.endTransmission();
+	delay(10);
+	wdt_reset();
+#endif //  RFEXPANSION
+
+	// ID 4 - RF Radion Channels
+#ifdef RFEXPANSION
+	Wire.beginTransmission(I2CRA_TouchDisplay);
+	Wire.write(4);
+	for (int a=0;a<RF_CHANNELS;a++)
+		Wire.write(RF.RadionChannels[a]);
+	Wire.write(0);
+	Wire.write(0);
+	Wire.endTransmission();
+	delay(10);
+	wdt_reset();
+#endif //  RFEXPANSION
+
+	if (DisplayedMenu==FEEDING_MODE)
+	{
+		// ID 0 - Feeding Timer
+		int t=Timer[FEEDING_TIMER].Trigger-now();
+		Wire.beginTransmission(I2CRA_TouchDisplay);
+		Wire.write(0);
+		Wire.write(t%256);
+		Wire.write(t/256);
+		Wire.endTransmission();
+		delay(10);
+		wdt_reset();
+	}
+	if (I2CCommand==COMMAND_CLEAR_ATO)
+		ATOClear();
+	if (I2CCommand==COMMAND_CLEAR_OVERHEAT)
+		OverheatClear();
+	if (I2CCommand==COMMAND_LIGHTS_ON)
+		LightsOn();
+	if (I2CCommand==COMMAND_LIGHTS_OFF)
+		LightsOff();
+	I2CCommand=0;
+}
+#endif // I2CMASTER
 
 #if defined REEFTOUCH || defined REEFTOUCHDISPLAY
 void ReefAngelClass::ShowTouchInterface()
@@ -2151,9 +2348,10 @@ void ReefAngelClass::ShowTouchInterface()
 	if ((EM&(1<<4))!=0) numexp++;
 	if ((EM&(1<<6))!=0) numexp++;
 	if ((EM&(1<<7))!=0) numexp++;
-	
+
 	switch ( DisplayedMenu )
 	{
+		case MAIN_MENU:
 		case DEFAULT_MENU:  // This is the home screen
 		{
 			// process screensaver timeout
@@ -2167,7 +2365,7 @@ void ReefAngelClass::ShowTouchInterface()
 			}
 #ifdef CUSTOM_MAIN
 			DrawCustomMain();
-#else  // CUSTOM_MAIN		
+#else  // CUSTOM_MAIN
 			if (!Splash)
 			{
 				int i,j;
@@ -2209,9 +2407,7 @@ void ReefAngelClass::ShowTouchInterface()
 							Font.DrawCenterText(twidth/2,theight-15,"Menu");
 						}
 						TouchLCD.DrawDateTime(38,9,MilitaryTime,Font);
-						TouchLCD.DrawAlertFlag(bitRead(Flags,ATOTimeOutFlag),ATOTimeOutFlag+1, ATOTIMEOUTFLAG);
-						TouchLCD.DrawAlertFlag(bitRead(Flags,OverheatFlag),OverheatFlag+1, OVERHEATFLAG);
-						TouchLCD.DrawAlertFlag(bitRead(Flags,BusLockFlag),BusLockFlag+1, BUSLOCKFLAG);
+						TouchLCD.DrawFlags(Flags);
 						if (DisplayedScreen==MAIN_SCREEN)
 						{
 							int x=0;
@@ -2219,8 +2415,8 @@ void ReefAngelClass::ShowTouchInterface()
 							if (NeedsRedraw)
 							{
 								NeedsRedraw=false;
-								
-								TouchLCD.Clear(COLOR_BLACK,0,34,twidth,theight-34);					
+
+								TouchLCD.Clear(COLOR_BLACK,0,34,twidth,theight-34);
 								if (i==12 || i==4) // Orientation is portrait
 								{
 									x=twidth*3/16;
@@ -2236,7 +2432,7 @@ void ReefAngelClass::ShowTouchInterface()
 									x+=twidth*5/16;
 									eeprom_read_block((void*)&tempname, (void*)Probe3Name, sizeof(tempname));
 									Font.DrawCenterText(x,j,tempname);
-									
+
 									//pH
 									x=twidth*3/16;
 									j+=45+i;
@@ -2320,12 +2516,12 @@ void ReefAngelClass::ShowTouchInterface()
 										Font.DrawCenterTextP(x,j,LABEL_WL);
 									}
 								}
-								
+
 								j+=18+i;
-					
+
 								//Division
 								TouchLCD.DrawLine(DIVISION,0,j,twidth,j);
-					
+
 								j+=5+i;
 								PB[0].NeedsRedraw=true;
 								j+=30+(i/2);
@@ -2333,14 +2529,14 @@ void ReefAngelClass::ShowTouchInterface()
 								j+=25+i;
 								//Division
 								TouchLCD.DrawLine(DIVISION,0,j,twidth,j);
-					
+
 								j+=8+(i*3/4);
-								
+
 								//ATO Ports
 								Font.DrawTextP(COLOR_WHITE,COLOR_BLACK,(twidth/10)+25,j,LABEL_ATOHIGHPORT);
 								Font.DrawTextP(COLOR_WHITE,COLOR_BLACK,(twidth*6/10)+25,j,LABEL_ATOLOWPORT);
 							}
-							
+
 							// Draw Parameter values
 							if (i==12 || i==4) // Orientation is portrait
 							{
@@ -2354,7 +2550,7 @@ void ReefAngelClass::ShowTouchInterface()
 								LargeFont.DrawCenterNumber(x,j,Params.Temp[T2_PROBE],10);
 								x+=twidth*5/16;
 								LargeFont.DrawCenterNumber(x,j,Params.Temp[T3_PROBE],10);
-						
+
 								//pH
 								x=twidth*3/16;
 								j+=43+i;
@@ -2776,7 +2972,7 @@ void ReefAngelClass::ShowTouchInterface()
 								ChangeDisplayedScreen(1);
 							if (TS.X<twidth-80 && TS.X>80 && TS.Y>theight-30)
 							{
-								DisplayedMenu=TOUCH_MENU;
+								SetDisplayedMenu(TOUCH_MENU);
 								DisplayedScreen=MAIN_MENU_SCREEN;
 								NeedsRedraw=true;
 							}
@@ -3100,6 +3296,7 @@ void ReefAngelClass::ShowTouchInterface()
 				wdt_reset();
 				if (NeedsRedraw)
 				{
+					delay(50);
 					TouchLCD.FullClear(BKCOLOR);
 					TouchLCD.SetBacklight(0);
 					if (orientation%2==0)
@@ -3138,13 +3335,13 @@ void ReefAngelClass::ShowTouchInterface()
 #endif  // SaveRelayState
 
 				// turn on ports
-				Relay.RelayMaskOff = B11111111;
+				Relay.RelayMaskOff |= FeedingModePorts;
 				// Compare the delayed on ports with the previous port states
 				Relay.RelayData &= ~(FeedingModePorts & DelayedOnPorts);
 #ifdef RelayExp
 				for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 				{
-					Relay.RelayMaskOffE[i] = B11111111;
+					Relay.RelayMaskOffE[i] |= FeedingModePortsE[i];
 					Relay.RelayDataE[i] &= ~(FeedingModePortsE[i] & DelayedOnPortsE[i]);
 				}
 #endif  // RelayExp
@@ -3179,10 +3376,10 @@ void ReefAngelClass::ShowTouchInterface()
 					if (SDFound) TouchLCD.DrawSDRawImage("water_p.raw",0,170,240,150);
 				}
 				TouchLCD.SetBacklight(100);
-				LargeFont.SetColor(WARNING_TEXT, BKCOLOR,false);
-				LargeFont.DrawCenterTextP(twidth/2, 10+y, WATER_CHANGE_LABEL);	
 				NeedsRedraw=false;
 			}
+			LargeFont.SetColor(WARNING_TEXT, BKCOLOR,false);
+			LargeFont.DrawCenterTextP(twidth/2, 10+y, WATER_CHANGE_LABEL);
 			LastStart = now();  // Set the time normal mode is started
 			if ( TS.IsTouched() )
 			{
@@ -3198,13 +3395,13 @@ void ReefAngelClass::ShowTouchInterface()
 #endif  // SaveRelayState
 
 				// turn on ports
-				Relay.RelayMaskOff = B11111111;
+				Relay.RelayMaskOff |= WaterChangePorts;
 				// Compare the delayed on ports with the previous port states
 				Relay.RelayData &= ~(WaterChangePorts & DelayedOnPorts);
 #ifdef RelayExp
 				for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 				{
-					Relay.RelayMaskOffE[i] = B11111111;
+					Relay.RelayMaskOffE[i] |= WaterChangePortsE[i];
 					Relay.RelayDataE[i] &= ~(WaterChangePortsE[i] & DelayedOnPortsE[i]);
 				}
 #endif  // RelayExp
@@ -3240,7 +3437,23 @@ void ReefAngelClass::ShowTouchInterface()
 							{
 								TouchLCD.DrawRoundRect(RGB565(0xD2, 0xE0, 0xAB),5,5+(47*a),(twidth/2)-6,5+ch+(47*a),4,true);
 								TouchLCD.DrawRoundRect(COLOR_SILVER,7,7+(47*a),(twidth/2)-8,3+ch+(47*a),4,false);
-								Font.DrawCenterTextP(twidth/4,14+(47*a),(char * )pgm_read_word(&(menu_button_items1[a*2])));
+								if (a==4)
+								{
+									Serial.print(Relay.RelayMaskOn);
+									Serial.print("\t");
+									Serial.print(LightsOnPorts);
+									Serial.print("\t");
+									Serial.print(Relay.RelayMaskOn & LightsOnPorts);
+									Serial.println();
+									if (bitRead(Flags,LightsOnFlag))
+										Font.DrawCenterTextP(twidth/4,14+(47*a),MENU_BUTTON_CANCEL);
+									else
+										Font.DrawCenterTextP(twidth/4,14+(47*a),(char * )pgm_read_word(&(menu_button_items1[a*2])));
+								}
+								else
+								{
+									Font.DrawCenterTextP(twidth/4,14+(47*a),(char * )pgm_read_word(&(menu_button_items1[a*2])));
+								}
 								Font.DrawCenterTextP(twidth/4,30+(47*a),(char * )pgm_read_word(&(menu_button_items1[(a*2)+1])));
 			
 								TouchLCD.DrawRoundRect(RGB565(0xD2, 0xE0, 0xAB),(twidth/2)+5,5+(47*a),twidth-6,5+ch+(47*a),4,true);
@@ -3295,9 +3508,12 @@ void ReefAngelClass::ShowTouchInterface()
 			}
 			if ( (now() - menutimeout) > MENU_TIMEOUT )
 			{
-				DisplayedMenu=DEFAULT_MENU;
+				SetDisplayedMenu(DEFAULT_MENU);
 				DisplayedScreen=MAIN_SCREEN;
 				NeedsRedraw=true;
+#ifdef REEFTOUCHDISPLAY
+				SendMaster(MESSAGE_MENU,DEFAULT_MENU,DEFAULT_MENU); 	// Change Menu
+#endif // REEFTOUCHDISPLAY
 			}
 			break;
 		}
@@ -3315,7 +3531,7 @@ void ReefAngelClass::ShowTouchInterface()
 			*/
 			redrawmenu = true;
 			showmenu = true;
-			DisplayedMenu = MAIN_MENU;
+			SetDisplayedMenu(MAIN_MENU);
 			break;
 		}
 		case RETURN_MAIN_MODE:
@@ -3335,126 +3551,15 @@ void ReefAngelClass::ShowTouchInterface()
 				Timer[FEEDING_TIMER].ForceTrigger();
 				Timer[LCD_TIMER].Start();
 			}
+			// if displayed screen is less than 156, it means we need to redraw because we just came from a I2C receive interrupt
+			if (DisplayedMenu<156)
+			{
+				DisplayedMenu+=100;
+				NeedsRedraw=true;
+			}
 			break;
 		}
 	}  // switch DisplayedMenu
-}
-
-void ReefAngelClass::UpdateTouchDisplay()
-{
-	// ID 0 - T1, T2, T3 and pH
-	Wire.beginTransmission(I2CRA_TouchDisplay);
-	Wire.write(0);
-	Wire.write(Params.Temp[T1_PROBE]%256);
-	Wire.write(Params.Temp[T1_PROBE]/256);
-	Wire.write(Params.Temp[T2_PROBE]%256);
-	Wire.write(Params.Temp[T2_PROBE]/256);
-	Wire.write(Params.Temp[T3_PROBE]%256);
-	Wire.write(Params.Temp[T3_PROBE]/256);
-	Wire.write(Params.PH%256);
-	Wire.write(Params.PH/256);
-	Wire.endTransmission();	
-	delay(10);
-	wdt_reset();
-
-	// ID 1 - R, RON, ROFF, ATO, EM, REM, DisplayedMenu and Flags
-	byte atostatus=0;
-	Wire.beginTransmission(I2CRA_TouchDisplay);
-	Wire.write(1);
-	Wire.write(Relay.RelayData);
-	Wire.write(Relay.RelayMaskOn);
-	Wire.write(Relay.RelayMaskOff);
-	if (ReefAngel.LowATO.IsActive())
-		bitSet(atostatus,0);
-	else
-		bitClear(atostatus,0);
-	if (ReefAngel.HighATO.IsActive())
-		bitSet(atostatus,1);
-	else
-		bitClear(atostatus,1);
-	Wire.write(atostatus);
-	Wire.write(EM);
-	Wire.write(REM);
-	Wire.write(DisplayedMenu);
-	Wire.write(Flags);
-	Wire.endTransmission();	
-	delay(10);
-	wdt_reset();
-
-	// ID 2 - PWM Daylight, Actinic and Exp. Channels
-	Wire.beginTransmission(I2CRA_TouchDisplay);
-	Wire.write(2);
-#ifdef DisplayLEDPWM
-	Wire.write(PWM.GetDaylightValue());
-	Wire.write(PWM.GetActinicValue());
-#else
-	Wire.write(0);
-	Wire.write(0);
-#endif  // DisplayLEDPWM
-	
-#ifdef PWMEXPANSION
-	for (int a=0;a<PWM_EXPANSION_CHANNELS;a++)
-		Wire.write(PWM.GetChannelValue(a));
-#else
-	for (int a=0;a<PWM_EXPANSION_CHANNELS;a++)
-		Wire.write(0);
-#endif //  PWMEXPANSION
-	Wire.endTransmission();	
-	delay(10);
-	wdt_reset();
-	
-	// ID 3 - RF Mode, Speed and Duration - AI Channels
-#ifdef RFEXPANSION
-	Wire.beginTransmission(I2CRA_TouchDisplay);
-	Wire.write(3);
-	Wire.write(RF.Mode);
-	Wire.write(RF.Speed);
-	Wire.write(RF.Duration);
-#ifdef AI_LED
-	Wire.write(AI.GetChannel(0));
-	Wire.write(AI.GetChannel(1));
-	Wire.write(AI.GetChannel(2));
-#else
-	Wire.write(0);
-	Wire.write(0);
-	Wire.write(0);
-#endif // AI_LED
-#ifdef IOEXPANSION
-	Wire.write(IO.IOPorts);
-#else
-	Wire.write(0);
-#endif // IOEXPANSION
-	Wire.write(0);
-	Wire.endTransmission();	
-	delay(10);
-	wdt_reset();
-#endif //  RFEXPANSION
-
-	// ID 4 - RF Radion Channels
-#ifdef RFEXPANSION
-	Wire.beginTransmission(I2CRA_TouchDisplay);
-	Wire.write(4);
-	for (int a=0;a<RF_CHANNELS;a++)
-		Wire.write(RF.RadionChannels[a]);
-	Wire.write(0);
-	Wire.write(0);
-	Wire.endTransmission();	
-	delay(10);
-	wdt_reset();
-#endif //  RFEXPANSION
-	
-	if (DisplayedMenu==FEEDING_MODE)
-	{
-		// ID 0 - Feeding Timer
-		int t=Timer[FEEDING_TIMER].Trigger-now();
-		Wire.beginTransmission(I2CRA_TouchDisplay);
-		Wire.write(0);
-		Wire.write(t%256);
-		Wire.write(t/256);
-		Wire.endTransmission();	
-		delay(10);
-		wdt_reset();
-	}
 }
 #else // REEFTOUCH
 void ReefAngelClass::ShowInterface()
@@ -3477,6 +3582,7 @@ void ReefAngelClass::ShowInterface()
 #endif  // defined WDT || defined WDT_FORCE
         switch ( DisplayedMenu )
         {
+        	case TOUCH_MENU:
 			case DEFAULT_MENU:  // This is the home screen
 			{
 				// process screensaver timeout
@@ -3497,19 +3603,7 @@ void ReefAngelClass::ShowInterface()
 						Timer[LCD_TIMER].Start();
 						return;
 					}
-
-					// Clears the screen to draw the menu
-					// Displays main menu, select first item, save existing menu
-					ClearScreen(DefaultBGColor);
-					SelectedMenuItem = DEFAULT_MENU_ITEM;
-					PreviousMenu = DEFAULT_MENU;
-					DisplayedMenu = MAIN_MENU;
-					showmenu = true;
-					redrawmenu = true;
-					menutimeout = now();
-#if defined WDT || defined WDT_FORCE
-					wdt_reset();
-#endif  // defined WDT || defined WDT_FORCE
+					PrepMenuScreen();
 					// get out of this function and display the menu
 					return;
 				}
@@ -3536,6 +3630,10 @@ void ReefAngelClass::ShowInterface()
 #else  // defined DisplayLEDPWM && ! defined RemoveAllLights
 				LCD.DrawMonitor(15, 60, Params);
 #endif  // defined DisplayLEDPWM && ! defined RemoveAllLights
+#if defined WDT || defined WDT_FORCE
+				wdt_reset();
+#endif  // defined WDT || defined WDT_FORCE
+
 				byte TempRelay = Relay.RelayData;
 				TempRelay &= Relay.RelayMaskOff;
 				TempRelay |= Relay.RelayMaskOn;
@@ -3575,6 +3673,9 @@ void ReefAngelClass::ShowInterface()
 					Memory.Write(taddr+360, CurTemp);
 					LCD.PutPixel(DefaultBGColor,1,1);
 					if ((taddr%10)==0) InternalMemory.T1Pointer_write(taddr);
+#if defined WDT || defined WDT_FORCE
+					wdt_reset();
+#endif  // defined WDT || defined WDT_FORCE
 #ifdef CUSTOM_MAIN
 					DrawCustomGraph();
 #else
@@ -3613,13 +3714,13 @@ void ReefAngelClass::ShowInterface()
 #endif  // SaveRelayState
 
 					// turn on ports
-					Relay.RelayMaskOff = B11111111;
+					Relay.RelayMaskOff |= FeedingModePorts;
 					// Compare the delayed on ports with the previous port states
 					Relay.RelayData &= ~(FeedingModePorts & DelayedOnPorts);
 #ifdef RelayExp
 					for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 					{
-						Relay.RelayMaskOffE[i] = B11111111;
+						Relay.RelayMaskOffE[i] |= FeedingModePortsE[i];
 						Relay.RelayDataE[i] &= ~(FeedingModePortsE[i] & DelayedOnPortsE[i]);
 					}
 #endif  // RelayExp
@@ -3642,13 +3743,13 @@ void ReefAngelClass::ShowInterface()
 #endif  // SaveRelayState
 
 					// turn on ports
-					Relay.RelayMaskOff = B11111111;
+					Relay.RelayMaskOff |= WaterChangePorts;
 					// Compare the delayed on ports with the previous port states
 					Relay.RelayData &= ~(WaterChangePorts & DelayedOnPorts);
 #ifdef RelayExp
 					for ( byte i = 0; i < MAX_RELAY_EXPANSION_MODULES; i++ )
 					{
-						Relay.RelayMaskOffE[i] = B11111111;
+						Relay.RelayMaskOffE[i] |= WaterChangePortsE[i];
 						Relay.RelayDataE[i] &= ~(WaterChangePortsE[i] & DelayedOnPortsE[i]);
 					}
 #endif  // RelayExp
@@ -3671,7 +3772,7 @@ void ReefAngelClass::ShowInterface()
 				*/
 				redrawmenu = true;
 				showmenu = true;
-				DisplayedMenu = MAIN_MENU;
+				SetDisplayedMenu(MAIN_MENU);
 				break;
 			}
 			case RETURN_MAIN_MODE:
@@ -3700,6 +3801,19 @@ void ReefAngelClass::ShowInterface()
 #endif  // defined WDT || defined WDT_FORCE
 }
 #endif // REEFTOUCH
+
+void ReefAngelClass::PrepMenuScreen()
+{
+	// Clears the screen to draw the menu
+	// Displays main menu, select first item, save existing menu
+	ClearScreen(DefaultBGColor);
+	SelectedMenuItem = DEFAULT_MENU_ITEM;
+	PreviousMenu = DEFAULT_MENU;
+	SetDisplayedMenu(MAIN_MENU);
+	showmenu = true;
+	redrawmenu = true;
+	menutimeout = now();
+}
 
 void ReefAngelClass::DisplayMenu()
 {
@@ -3748,7 +3862,7 @@ void ReefAngelClass::DisplayMenu()
         // menu timeout returns to the main screen
         // skip all the other menu checks
         SelectedMenuItem = EXCEED_TIMEOUT_MENU;
-        DisplayedMenu = EXCEED_TIMEOUT_MENU;
+		SetDisplayedMenu(EXCEED_TIMEOUT_MENU);
         ButtonPress++;
     }
 
@@ -3895,8 +4009,13 @@ void ReefAngelClass::DisplayMenuEntry(char *text)
 
 void ReefAngelClass::ExitMenu()
 {
+	// Handles the cleanup to return to the main screen
+#if defined WDT || defined WDT_FORCE
+	wdt_reset();
+#endif  // defined WDT || defined WDT_FORCE
+	ClearScreen(DefaultBGColor);
 	Timer[LCD_TIMER].Start();
-	DisplayedMenu = DEFAULT_MENU;
+	SetDisplayedMenu(DEFAULT_MENU);
 #if defined REEFTOUCH || defined REEFTOUCHDISPLAY
 	NeedsRedraw=true;
 #else
@@ -3910,6 +4029,14 @@ void ReefAngelClass::ExitMenu()
 	LCD.DrawGraph(5, 5);
 #endif  // CUSTOM_MAIN
 #endif //  REEFTOUCH
+}
+
+void ReefAngelClass::SetDisplayedMenu(byte value)
+{
+	DisplayedMenu=value;
+#ifdef REEFTOUCHDISPLAY
+	SendMaster(MESSAGE_MENU,value,value); 	// Change Menu
+#endif // REEFTOUCHDISPLAY
 }
 
 void ReefAngelClass::ProcessButtonPress()
@@ -4153,7 +4280,7 @@ void ReefAngelClass::ProcessButtonPressMain()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             PreviousMenu = DisplayedMenu;
-            DisplayedMenu = LightsMenu;
+        	SetDisplayedMenu(LightsMenu);
             break;
         }
 #endif  // RemoveAllLights
@@ -4161,7 +4288,7 @@ void ReefAngelClass::ProcessButtonPressMain()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             PreviousMenu = DisplayedMenu;
-            DisplayedMenu = TempsMenu;
+        	SetDisplayedMenu(TempsMenu);
             break;
         }
 #if defined SetupExtras || defined ATOSetup
@@ -4169,7 +4296,7 @@ void ReefAngelClass::ProcessButtonPressMain()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             PreviousMenu = DisplayedMenu;
-            DisplayedMenu = TimeoutsMenu;
+        	SetDisplayedMenu(TimeoutsMenu);
             break;
         }
 #endif  // if defined SetupExtras || defined ATOSetup
@@ -4177,7 +4304,7 @@ void ReefAngelClass::ProcessButtonPressMain()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             PreviousMenu = DisplayedMenu;
-            DisplayedMenu = SetupMenu;
+        	SetDisplayedMenu(SetupMenu);
             break;
         }
 #endif  // SIMPLE_MENU
@@ -4307,7 +4434,7 @@ void ReefAngelClass::ProcessButtonPressSetup()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             // switch to the previous menu
-            DisplayedMenu = PreviousMenu;
+        	SetDisplayedMenu(PreviousMenu);
             break;
         }
     }
@@ -4378,7 +4505,7 @@ void ReefAngelClass::ProcessButtonPressLights()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             // switch to the previous menu
-            DisplayedMenu = PreviousMenu;
+        	SetDisplayedMenu(PreviousMenu);
             break;
         }
     }
@@ -4481,7 +4608,7 @@ void ReefAngelClass::ProcessButtonPressTemps()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             // switch to the previous menu
-            DisplayedMenu = PreviousMenu;
+        	SetDisplayedMenu(PreviousMenu);
             break;
         }
     }
@@ -4567,7 +4694,7 @@ void ReefAngelClass::ProcessButtonPressTimeouts()
         {
             SelectedMenuItem = DEFAULT_MENU_ITEM;
             // switch to the previous menu
-            DisplayedMenu = PreviousMenu;
+        	SetDisplayedMenu(PreviousMenu);
             break;
         }
     }
@@ -4763,34 +4890,28 @@ void ReefAngelClass::SetupLightsOptionDisplay(bool bMetalHalide)
     char msg[20];
     byte offset_hr = 45;
     byte offset_min = offset_hr+20;
-    if ( bMetalHalide )
-    {
 #ifdef MetalHalideSetup
-        strcpy(msg, "Metal Halide Setup");
-        h1 = InternalMemory.MHOnHour_read();
-        m1 = InternalMemory.MHOnMinute_read();
-        h2 = InternalMemory.MHOffHour_read();
-        m2 = InternalMemory.MHOffMinute_read();
+	strcpy(msg, "Metal Halide Setup");
+	h1 = InternalMemory.MHOnHour_read();
+	m1 = InternalMemory.MHOnMinute_read();
+	h2 = InternalMemory.MHOffHour_read();
+	m2 = InternalMemory.MHOffMinute_read();
 #endif // MetalHalideSetup
-    }
-    else
-    {
 #ifdef StandardLightSetup
-        strcpy(msg, "Std Lights Setup");
-        h1 = InternalMemory.StdLightsOnHour_read();
-        m1 = InternalMemory.StdLightsOnMinute_read();
-        h2 = InternalMemory.StdLightsOffHour_read();
-        m2 = InternalMemory.StdLightsOffMinute_read();
+	strcpy(msg, "Std Lights Setup");
+	h1 = InternalMemory.StdLightsOnHour_read();
+	m1 = InternalMemory.StdLightsOnMinute_read();
+	h2 = InternalMemory.StdLightsOffHour_read();
+	m2 = InternalMemory.StdLightsOffMinute_read();
 #endif // StandardLightSetup
-    }
     ClearScreen(DefaultBGColor);
     // header / title
     LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL, MENU_START_ROW, msg);
     // prefixes, draw in ':' between options
     LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL, MENU_START_ROW*4, "On:");
     LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL+offset_hr+13, MENU_START_ROW*4, ":");
-    LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL, MENU_START_ROW*6, "Off:");
-    LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL+offset_hr+13, MENU_START_ROW*6, ":");
+    LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL, MENU_START_ROW*7, "Off:");
+    LCD.DrawText(DefaultFGColor, DefaultBGColor, MENU_START_COL+offset_hr+13, MENU_START_ROW*7, ":");
     do
     {
 #if defined WDT || defined WDT_FORCE
@@ -4798,94 +4919,63 @@ void ReefAngelClass::SetupLightsOptionDisplay(bool bMetalHalide)
 #endif  // defined WDT || defined WDT_FORCE
         if ( bRedraw )
         {
+        	byte WhichOption=0;
+        	boolean OKStatus=false;
+        	boolean CancelStatus=false;
             switch ( sel )
             {
                 case OPT1:
                 {
-                    // draw the second line items before the first line items
-                    // so the UP & DOWN arrows show properly
-                    LCD.DrawOption(m2, 0, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(h2, 0, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(m1, 0, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(h1, 1, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOK(false);
-                        LCD.DrawCancel(false);
-                    }
+                	WhichOption=1;
+                	OKStatus=false;
+                	CancelStatus=false;
                     break;
                 }
                 case OPT2:
                 {
-                    // draw the second line items before the first line items
-                    // so the UP & DOWN arrows show properly
-                    LCD.DrawOption(m2, 0, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(h2, 0, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(m1, 1, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(h1, 0, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOK(false);
-                        LCD.DrawCancel(false);
-                    }
+                	WhichOption=2;
+                	OKStatus=false;
+                	CancelStatus=false;
                     break;
                 }
                 case OPT3:
                 {
-                    // draw the first line items before the second line items
-                    // so the UP & DOWN arrows show properly
-                    LCD.DrawOption(m1, 0, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(h1, 0, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(m2, 0, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(h2, 1, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOK(false);
-                        LCD.DrawCancel(false);
-                    }
+                	WhichOption=3;
+                	OKStatus=false;
+                	CancelStatus=false;
                     break;
                 }
                 case OPT4:
                 {
-                    // draw the first line items before the second line items
-                    // so the UP & DOWN arrows show properly
-                    LCD.DrawOption(m1, 0, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(h1, 0, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                    LCD.DrawOption(m2, 1, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                    LCD.DrawOption(h2, 0, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOK(false);
-                        LCD.DrawCancel(false);
-                    }
+                	WhichOption=4;
+                	OKStatus=false;
+                	CancelStatus=false;
                     break;
                 }
                 case OK:
                 {
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOption(m1, 0, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                        LCD.DrawOption(h1, 0, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                        LCD.DrawOption(m2, 0, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                        LCD.DrawOption(h2, 0, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                        LCD.DrawOK(true);
-                        LCD.DrawCancel(false);
-                    }
+                	WhichOption=0;
+                	OKStatus=true;
+                	CancelStatus=false;
+
                     break;
                 }
                 case CANCEL:
                 {
-                    if ( bDrawButtons )
-                    {
-                        LCD.DrawOption(m1, 0, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
-                        LCD.DrawOption(h1, 0, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
-                        LCD.DrawOption(m2, 0, MENU_START_COL+offset_min, MENU_START_ROW*6, "", "");
-                        LCD.DrawOption(h2, 0, MENU_START_COL+offset_hr, MENU_START_ROW*6, "", "");
-                        LCD.DrawOK(false);
-                        LCD.DrawCancel(true);
-                    }
+                	WhichOption=0;
+                	OKStatus=false;
+                	CancelStatus=true;
                     break;
                 }
+            }
+            LCD.DrawOption(h1, WhichOption==1, MENU_START_COL+offset_hr, MENU_START_ROW*4, "", "");
+            LCD.DrawOption(m1, WhichOption==2, MENU_START_COL+offset_min, MENU_START_ROW*4, "", "");
+            LCD.DrawOption(h2, WhichOption==3, MENU_START_COL+offset_hr, MENU_START_ROW*7, "", "");
+            LCD.DrawOption(m2, WhichOption==4, MENU_START_COL+offset_min, MENU_START_ROW*7, "", "");
+            if ( bDrawButtons )
+            {
+                LCD.DrawOK(OKStatus);
+                LCD.DrawCancel(CancelStatus);
             }
             bRedraw = false;
             bDrawButtons = false;
@@ -6709,8 +6799,14 @@ void receiveEvent(int howMany) {
 				ReefAngel.HighATO.SetActive(bitRead(d[4],1));
 				ReefAngel.EM=d[5];
 				ReefAngel.REM=d[6];
-				if (ReefAngel.DisplayedMenu!=d[7]) ReefAngel.NeedsRedraw=true;
-				ReefAngel.DisplayedMenu=d[7];
+				if (ReefAngel.DisplayedMenu!=d[7])
+				{
+					if (ReefAngel.DisplayedMenu!=TOUCH_MENU)
+					{
+						// deduct 100 from the value to indicate we are coming from an interrupt.
+						ReefAngel.DisplayedMenu=d[7]-100;
+					}
+				}
 				ReefAngel.Flags=d[8];
 				break;
 			case 2:
@@ -6800,6 +6896,25 @@ void receiveEventMaster(int howMany)
 					ReefAngel.AI.Override(d[1]-OVERRIDE_AI_WHITE,d[2]);
 				if (d[1]>=OVERRIDE_RF_WHITE && d[1]<=OVERRIDE_RF_INTENSITY)
 					ReefAngel.RF.Override(d[1]-OVERRIDE_RF_WHITE,d[2]);
+				break;
+			}
+			case MESSAGE_MENU: // Change menu screen
+			{
+				if (d[1]==d[2])
+				{
+					switch (d[1])
+					{
+					case FEEDING_MODE:
+					case WATERCHANGE_MODE:
+						ReefAngel.ChangeMode=d[1];
+						break;
+					}
+				}
+				break;
+			}
+			case MESSAGE_COMMAND: // I2C Commands
+			{
+				ReefAngel.I2CCommand=d[1];
 				break;
 			}
 		}
@@ -6968,6 +7083,7 @@ void SliderClass::Hide()
 
 boolean SliderClass::Refresh()
 {
+    wdt_reset();
 	if (IsPlusPressed())
 	{
 		current++;
